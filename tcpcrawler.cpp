@@ -12,6 +12,8 @@
 
 using namespace std;
 
+const int maxMessageReceiveSize = 140 * 1024;
+
 string generateHttpRequest(char *path) {
 	string requestMessage = "GET ";
 	requestMessage.append(path); //path is the hostURL
@@ -24,9 +26,7 @@ string generateHttpRequest(char *path) {
 }
 
 int connect(char* website) {
-	int sock, byteReceived;
-	char dataSent[1024];
-	char dataReceived[1024];
+	int sock;
 	struct hostent* host;
 	struct sockaddr_in server_addr;
 	
@@ -54,7 +54,21 @@ int connect(char* website) {
 	cout << "Connected to " << inet_ntoa(server_addr.sin_addr) << " " << ntohs(server_addr.sin_port) << endl;
 	
 	string requestMessage = generateHttpRequest(website);
-	cout << requestMessage << endl;
+	
+	int status = send(sock, requestMessage.c_str(), requestMessage.size(), 0);
+	cout << "Request: " << requestMessage << endl;
+	
+	char buf[maxMessageReceiveSize];
+	
+	string messageReceived = "";
+	
+	while (status !=0) {
+		memset(buf, 0, maxMessageReceiveSize);
+		status = recv(sock, buf, maxMessageReceiveSize, 0);
+		messageReceived.append(buf);
+	}
+	cout << "Received: " << messageReceived << endl;
+	
 	return 0;
 }
 
