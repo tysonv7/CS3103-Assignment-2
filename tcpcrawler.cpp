@@ -9,10 +9,15 @@
 #include <unistd.h>
 #include <errno.h>
 #include <iostream>
+#include <chrono> //For timing purposes
+#include <vector>
 
 using namespace std;
 
 const int maxMessageReceiveSize = 140 * 1024;
+vector<pair<string, float>> visitedVector;
+
+int numOfWebsitesVisited = 0;
 
 string generateHttpRequest(char *path) {
 	string requestMessage = "GET ";
@@ -56,19 +61,31 @@ int connect(char* website) {
 	string requestMessage = generateHttpRequest(website);
 	
 	int status = send(sock, requestMessage.c_str(), requestMessage.size(), 0);
+	chrono::high_resolution_clock::time_point start = chrono::high_resolution_clock::now();
 	cout << "Request: " << requestMessage << endl;
 	
 	char buf[maxMessageReceiveSize];
 	
 	string messageReceived = "";
 	
-	while (status !=0) {
-		memset(buf, 0, maxMessageReceiveSize);
-		status = recv(sock, buf, maxMessageReceiveSize, 0);
-		messageReceived.append(buf);
+	if (status !=0) {
+		chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
+		float elapsedTime = chrono::duration_cast<chrono::milliseconds> (end - start).count();
+		visitedVector.push_back(make_pair(website, elapsedTime));
+		while (status !=0) {
+			memset(buf, 0, maxMessageReceiveSize);
+			status = recv(sock, buf, maxMessageReceiveSize, 0);
+			messageReceived.append(buf);
+		}
 	}
 	cout << "Received: " << messageReceived << endl;
+	numOfWebsitesVisited++;
 	
+	/* To check the visited array
+	for (auto &x:visitedVector) {
+		cout << x.first << " : " << x.second << endl;
+	}
+	*/
 	return 0;
 }
 
