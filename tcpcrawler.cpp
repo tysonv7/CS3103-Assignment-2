@@ -21,19 +21,33 @@
 #include <ctime>
 #include <time.h>
 #include <pthread.h>
+#include <thread>
+#include <mutex>
 
 using namespace std;
+
+static mutex updateNumOfWebsitesVisitGuard;
+static mutex checkNumOfThreadsGuard;
+static mutex updateVisitedURLGuard;
 
 const int maxMessageReceiveSize = 140 * 1024;
 set<string> visitedURL;
 set<pair<string, float>>visitedVector;
+vector<thread> threadVector;
 
 const int maxNumOfWebsitesToVisit = 50;
 const int recursionDepthLimit = 3;
+const int maxNumOfThreads = 10;
 
 int numOfWebsitesVisited = 0;
 
 queue<pair<string, string>> websiteQueue;
+
+void killAllThreads(){
+	for (auto &x : threadVector) {
+		x.join();
+	}
+}
 
 string parseHttp(string str) {
 	const boost::regex re("(?i)http://(.*)/?(.*)");
@@ -59,9 +73,11 @@ void parseHref(string originalHost, string str) {
 			size_t found = hostname.find_first_of("/");
 			if (found == string::npos) {
 				url = hostname+page;
+				updateVisitedURLGuard.try_lock();
 				if(visitedURL.find(url) == visitedURL.end()) {
 					websiteQueue.push(make_pair(hostname, page));
 					visitedURL.insert(url);
+					updateVisitedURLGuard.unlock();
 				}
 			}
 		} else {
@@ -69,9 +85,11 @@ void parseHref(string originalHost, string str) {
 			size_t found = hostname.find_first_of("/");
 			if (found == string::npos) {
 				url = hostname;
+				updateVisitedURLGuard.try_lock();
 				if(visitedURL.find(url) == visitedURL.end()) {
 					websiteQueue.push(make_pair(hostname, ""));
 					visitedURL.insert(url);
+					updateVisitedURLGuard.unlock();
 				}
 				
 			}
@@ -86,23 +104,26 @@ void parse(string host, string href) {
 		parseHref(hst, href);
 	} else {
 		if(href =="") {
-			
 			size_t found = host.find_first_of("/");
+			updateVisitedURLGuard.try_lock();
 			if (found == string::npos) {
 				url = host + "/";
 				if(visitedURL.find(url) == visitedURL.end()) {
 					websiteQueue.push(make_pair(host,"/"));
 					visitedURL.insert(url);
+					updateVisitedURLGuard.unlock();
 				}
 				
 			}
 		} else {
 			size_t found = host.find_first_of("/");
+			updateVisitedURLGuard.try_lock();
 			if (found == string::npos) {
 				url = host+href;
 				if(visitedURL.find(url) == visitedURL.end()) {
 					websiteQueue.push(make_pair(host,href));
 					visitedURL.insert(url);
+					updateVisitedURLGuard.unlock();
 				}
 			}
 		}
@@ -132,7 +153,7 @@ string generateHttpRequest(string host, string path) {
 	return requestMessage;
 }
 
-int connect(string website, string path) {
+int connectToURL(string website, string path) {
 	int sock;
 	struct hostent* host;
 	struct sockaddr_in server_addr;
@@ -142,10 +163,13 @@ int connect(string website, string path) {
 		string hostname = websiteQueue.front().first;
 		string page = websiteQueue.front().second;
 		this_thread::sleep_for(chrono::milliseconds(3));
-		connect(hostname, page);
+		//connect(hostname, page);
+		std::thread t1(connectToURL,hostname,page);
+		t1.join();
+		threadVector.push_back(move(t1));
 	}
 	
-	cout << "Try to visit: " << website << endl;
+	cout << "Try to visit: " << website+path << endl;
 	//Creating a socket Structure
 	if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
 		cout << "Error in socket creation" << endl;
@@ -153,7 +177,10 @@ int connect(string website, string path) {
 		string hostname = websiteQueue.front().first;
 		string page = websiteQueue.front().second;
 		this_thread::sleep_for(chrono::milliseconds(3));
-		connect(hostname, page);
+		//connect(hostname, page);
+		std::thread t2(connectToURL, hostname, page);
+		t2.join();
+		threadVector.push_back(move(t2));
 	}
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(80);
@@ -167,7 +194,10 @@ int connect(string website, string path) {
 		string hostname = websiteQueue.front().first;
 		string page = websiteQueue.front().second;
 		this_thread::sleep_for(chrono::milliseconds(3));
-		connect(hostname, page);
+		//connect(hostname, page);
+		std::thread t3(connectToURL, hostname, page);
+		t3.join();
+		threadVector.push_back(move(t3));
 	}
 
 	cout << "Connected to " << inet_ntoa(server_addr.sin_addr) << " " << ntohs(server_addr.sin_port) << endl;
@@ -184,17 +214,20 @@ int connect(string website, string path) {
 	if (status !=0) {
 		auto end = chrono::high_resolution_clock::now();
 		float elapsedTime = chrono::duration_cast<chrono::nanoseconds> (end - start).count();
-		visitedVector.insert(make_pair(website, elapsedTime));
+		visitedVector.insert(make_pair(website+path, elapsedTime));
 		while (status !=0) {
 			memset(buf, 0, maxMessageReceiveSize);
 			status = recv(sock, buf, maxMessageReceiveSize, 0);
 			messageReceived.append(buf);
 		}
 	}
+	updateNumOfWebsitesVisitGuard.try_lock();
 	numOfWebsitesVisited++;
-	cout << "Number of websites visited: " << numOfWebsitesVisited << endl;
+	updateNumOfWebsitesVisitGuard.unlock();
+	//cout << "Number of websites visited: " << numOfWebsitesVisited << endl;
 	
 	if(numOfWebsitesVisited == maxNumOfWebsitesToVisit) {
+		killAllThreads();
 		return 0;
 	} else {
 		websiteQueue.pop();
@@ -220,7 +253,10 @@ int connect(string website, string path) {
 			string hostname = websiteQueue.front().first;
 			string page = websiteQueue.front().second;
 			this_thread::sleep_for(chrono::milliseconds(3));
-			connect(hostname, page);
+			//connect(connectToURL, page);
+			std::thread t4(connectToURL, hostname, page);
+			t4.join();
+			threadVector.push_back(move(t4));
 		} catch (boost::regex_error &e) {
 			cout << "Error: " << e.what() << endl;
 		}
@@ -231,6 +267,7 @@ int connect(string website, string path) {
 int main(int argc, char* argv[]) {
 	string seed(argv[1]);
 	websiteQueue.push(make_pair(seed,"/"));
-	connect(seed, "/");
+	connectToURL(seed, "/");
+	//std::thread start(connectToURL, seed, "/");
 	writeResults();
 }
