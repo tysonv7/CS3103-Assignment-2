@@ -29,19 +29,22 @@ using namespace std;
 static mutex updateNumOfWebsitesVisitGuard;
 static mutex checkNumOfThreadsGuard;
 static mutex updateVisitedURLGuard;
+static mutex printGuard;
 
-const int maxMessageReceiveSize = 140 * 1024;
+const int maxMessageReceiveSize = 1024;
 set<string> visitedURL;
 set<pair<string, float>>visitedVector;
 vector<thread> threadVector;
 
-const int maxNumOfWebsitesToVisit = 50;
+const int maxNumOfWebsitesToVisit = 75;
 const int recursionDepthLimit = 3;
-const int maxNumOfThreads = 10;
+const int maxNumOfThreads = 5;
 
 int numOfWebsitesVisited = 0;
 
 queue<pair<string, string>> websiteQueue;
+
+ofstream outfile("output.txt");
 
 void killAllThreads(){
 	for (auto &x : threadVector) {
@@ -77,6 +80,7 @@ void parseHref(string originalHost, string str) {
 				if(visitedURL.find(url) == visitedURL.end()) {
 					websiteQueue.push(make_pair(hostname, page));
 					visitedURL.insert(url);
+					
 					updateVisitedURLGuard.unlock();
 				}
 			}
@@ -130,16 +134,6 @@ void parse(string host, string href) {
 	}
 }
 
-void writeResults() {
-	ofstream outfile("output.txt");
-	//To check the visited array
-	for (auto &x:visitedVector) {
-		outfile << "Base URL: " << x.first << endl;
-		outfile << "Time Taken: " << x.second << " nanoseconds" << endl << endl;
-	}
-	outfile.close();
-}
-
 string generateHttpRequest(string host, string path) {
 	string requestMessage = "GET ";
 	requestMessage.append(path);
@@ -153,7 +147,18 @@ string generateHttpRequest(string host, string path) {
 	return requestMessage;
 }
 
-int connectToURL(string website, string path) {
+int connectToURL(string website, string path, int recursionDepth) {
+	cout << "Checking recursion depth at the start" << endl;
+	if (recursionDepth >= recursionDepthLimit) {
+		thread::id this_id = std::this_thread::get_id();
+		printGuard.try_lock();
+		cout << "Child thread going to die: " << this_id << endl;
+		cout << "Number of websites visited: " << numOfWebsitesVisited << endl;
+		printGuard.unlock();
+		killAllThreads();
+		//return 0;
+	} 
+	
 	int sock;
 	struct hostent* host;
 	struct sockaddr_in server_addr;
@@ -164,7 +169,7 @@ int connectToURL(string website, string path) {
 		string page = websiteQueue.front().second;
 		this_thread::sleep_for(chrono::milliseconds(3));
 		//connect(hostname, page);
-		std::thread t1(connectToURL,hostname,page);
+		std::thread t1(connectToURL,hostname,page,recursionDepth);
 		t1.join();
 		threadVector.push_back(move(t1));
 	}
@@ -178,7 +183,7 @@ int connectToURL(string website, string path) {
 		string page = websiteQueue.front().second;
 		this_thread::sleep_for(chrono::milliseconds(3));
 		//connect(hostname, page);
-		std::thread t2(connectToURL, hostname, page);
+		std::thread t2(connectToURL, hostname, page, recursionDepth);
 		t2.join();
 		threadVector.push_back(move(t2));
 	}
@@ -195,7 +200,7 @@ int connectToURL(string website, string path) {
 		string page = websiteQueue.front().second;
 		this_thread::sleep_for(chrono::milliseconds(3));
 		//connect(hostname, page);
-		std::thread t3(connectToURL, hostname, page);
+		std::thread t3(connectToURL, hostname, page, recursionDepth);
 		t3.join();
 		threadVector.push_back(move(t3));
 	}
@@ -203,7 +208,9 @@ int connectToURL(string website, string path) {
 	cout << "Connected to " << inet_ntoa(server_addr.sin_addr) << " " << ntohs(server_addr.sin_port) << endl;
 	
 	string requestMessage = generateHttpRequest(website, path);
+	cout << "Generated HTTP Request" << endl;
 	
+	cout<< "Receiving data now" << endl;
 	int status = send(sock, requestMessage.c_str(), requestMessage.size(), 0);
 	auto start = chrono::high_resolution_clock::now();
 	
@@ -214,28 +221,40 @@ int connectToURL(string website, string path) {
 	if (status !=0) {
 		auto end = chrono::high_resolution_clock::now();
 		float elapsedTime = chrono::duration_cast<chrono::nanoseconds> (end - start).count();
-		visitedVector.insert(make_pair(website+path, elapsedTime));
+		//visitedVector.insert(make_pair(website+path, elapsedTime));
+		outfile << "Base URL: " << website+path << endl;
+		outfile << "Time Taken: " << elapsedTime << " nanoseconds" << endl << endl;
 		while (status !=0) {
+			if (messageReceived.length() > 32768) {
+				break;
+			}
 			memset(buf, 0, maxMessageReceiveSize);
 			status = recv(sock, buf, maxMessageReceiveSize, 0);
 			messageReceived.append(buf);
 		}
 	}
+	cout <<"Updating number of websites" << endl;
 	updateNumOfWebsitesVisitGuard.try_lock();
 	numOfWebsitesVisited++;
 	updateNumOfWebsitesVisitGuard.unlock();
 	//cout << "Number of websites visited: " << numOfWebsitesVisited << endl;
 	
+	cout << "Checking if number of website visited is enough" << endl;
 	if(numOfWebsitesVisited == maxNumOfWebsitesToVisit) {
-		killAllThreads();
+		thread::id this_id = std::this_thread::get_id();
+		cout << "Thread returning: " << this_id << endl;
+		//killAllThreads();
+		outfile.close();
 		return 0;
 	} else {
+		cout << "Regex magic" << endl;
 		websiteQueue.pop();
 		try {
+			cout <<"First regex" << endl;
 			const boost::regex rmv_all("[\\r|\\n]");
 			const string s2 = boost::regex_replace(messageReceived, rmv_all, "");
 			const string s = s2;
-			
+			cout<<"Second regex" << endl;
 			//Use this regex expression to find for anchor tag but not '>' where (.+? match anything)
 			const boost::regex re("<a\\s+href\\s*=\\s*(\"([^\"]*)\")|('([^']*)')\\s*>");
 			boost::cmatch matches;
@@ -250,24 +269,44 @@ int connectToURL(string website, string path) {
 					parse(website,href);
 				}
 			}
+			cout << "Checking if there's bullet to shoot" << endl;
+			if (websiteQueue.empty()) {
+				thread::id this_id = std::this_thread::get_id();
+				printGuard.try_lock();
+				cout << "Child thread going to die: " << this_id << endl;
+				cout << "Number of websites visited: " << numOfWebsitesVisited << endl;
+				printGuard.unlock();
+				return 0;
+			}
+			cout << "Preparing new child" << endl;
 			string hostname = websiteQueue.front().first;
 			string page = websiteQueue.front().second;
 			this_thread::sleep_for(chrono::milliseconds(3));
+			cout << "New child problem" << endl;
 			//connect(connectToURL, page);
-			std::thread t4(connectToURL, hostname, page);
+			std::thread t4(connectToURL, hostname, page,recursionDepth+1);
 			t4.join();
 			threadVector.push_back(move(t4));
+			
 		} catch (boost::regex_error &e) {
 			cout << "Error: " << e.what() << endl;
 		}
-		return 1;
+		cout << "Checking recursion depth at the end" << endl;
+		if (recursionDepth >= recursionDepthLimit) {
+			thread::id this_id = std::this_thread::get_id();
+			cout << "Thread returning: " << this_id << endl;
+			return 0;
+		} else {
+			//killAllThreads();
+		}
 	}
 }
 
 int main(int argc, char* argv[]) {
 	string seed(argv[1]);
 	websiteQueue.push(make_pair(seed,"/"));
-	connectToURL(seed, "/");
+	connectToURL(seed, "/", 0);
 	//std::thread start(connectToURL, seed, "/");
-	writeResults();
+	thread::id this_id = std::this_thread::get_id();
+	cout << "Main thread going to die: " << this_id << endl;
 }
